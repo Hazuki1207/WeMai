@@ -51,7 +51,7 @@
    > 如果看完了前两步，你应该部署好了属于自己的redis数据库和maibot
    > 那么，可以开始部署和运行本项目了
    ```bash
-   git clone https://github.com/yourusername/wemai.git
+   git clone https://github.com/yaki66938/wemai.git
    cd wemai
    pip install -r requirements.txt
    cp .env.example .env
