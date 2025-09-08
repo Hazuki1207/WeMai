@@ -142,6 +142,22 @@ class MessageProcessor:
                     emoji_data = message_segment.data
                     await self._send_to_wechat(receiver, emoji_data)
                     logger.info(f"已处理表情包消息")
+                elif message_segment.type == "reply":
+                    # 回复引用消息，只记录日志，不发送到微信
+                    logger.info(f"跳过回复引用消息: {message_segment.data}")
+                elif message_segment.type == "at":
+                    # @消息，转换为文字格式
+                    at_content = f"[@{message_segment.data}]"
+                    await self._send_to_wechat(receiver, at_content)
+                    logger.info(f"已处理@消息: {at_content}")
+                elif message_segment.type == "voice":
+                    # 语音消息，发送提示文字
+                    voice_content = "[发了一段语音，网卡了加载不出来]"
+                    await self._send_to_wechat(receiver, voice_content)
+                    logger.info(f"已处理语音消息")
+                elif message_segment.type == "notify":
+                    # 通知消息，通常不需要发送到微信
+                    logger.info(f"跳过通知消息: {message_segment.data}")
                 else:
                     # 其他类型消息，尝试作为文字发送
                     reply_content = str(message_segment.data)
