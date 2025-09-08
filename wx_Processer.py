@@ -177,7 +177,10 @@ class MessageProcessor:
     async def _send_to_wechat(self, receiver, content):
         """发送消息到微信"""
         try:
-            # 由于wxauto是同步的，我们需要在线程中执行
+            # 使用asyncio在线程池中执行同步操作
+            import asyncio
+            import concurrent.futures
+            
             def send_message():
                 try:
                     from wxauto import WeChat
@@ -237,11 +240,12 @@ class MessageProcessor:
                         
                 except Exception as e:
                     logger.error(f"发送微信消息失败: {str(e)}")
+                    raise e
             
-            # 在新线程中执行
-            thread = threading.Thread(target=send_message)
-            thread.daemon = True
-            thread.start()
+            # 在线程池中执行并等待完成
+            loop = asyncio.get_event_loop()
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                await loop.run_in_executor(executor, send_message)
             
         except Exception as e:
             logger.error(f"发送微信消息时发生错误: {str(e)}")
