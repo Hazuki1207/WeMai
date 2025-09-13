@@ -194,16 +194,32 @@ class MessageProcessor:
                         # 可能是base64编码的图片
                         try:
                             # 尝试解码base64数据
+                            file_extension = '.png'  # 默认扩展名
                             if content.startswith('data:image/'):
-                                # 处理data URL格式
+                                # 处理data URL格式，提取文件类型
                                 header, encoded = content.split(",", 1)
+                                if 'gif' in header.lower():
+                                    file_extension = '.gif'
+                                elif 'jpeg' in header.lower() or 'jpg' in header.lower():
+                                    file_extension = '.jpg'
+                                elif 'png' in header.lower():
+                                    file_extension = '.png'
                                 image_data = base64.b64decode(encoded)
                             else:
-                                # 处理纯base64编码
+                                # 处理纯base64编码，尝试检测文件类型
                                 image_data = base64.b64decode(content)
+                                # 检查GIF文件头
+                                if image_data.startswith(b'GIF8'):
+                                    file_extension = '.gif'
+                                # 检查JPEG文件头
+                                elif image_data.startswith(b'\xff\xd8\xff'):
+                                    file_extension = '.jpg'
+                                # 检查PNG文件头
+                                elif image_data.startswith(b'\x89PNG'):
+                                    file_extension = '.png'
                             
-                            # 创建临时文件
-                            with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as temp_file:
+                            # 创建临时文件，使用正确的扩展名
+                            with tempfile.NamedTemporaryFile(delete=False, suffix=file_extension) as temp_file:
                                 temp_file.write(image_data)
                                 temp_file_path = temp_file.name
                             
