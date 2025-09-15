@@ -292,6 +292,26 @@ class MessageProcessor:
             logger.error(f"处理消息时发生错误: {str(e)}")
             return {"success": False, "error": str(e)}
     
+    def _is_image_path_message(self, content: str) -> bool:
+        """
+        检查是否是图片路径消息
+        
+        Args:
+            content (str): 消息内容
+        
+        Returns:
+            bool: 是否是图片路径消息
+        """
+        if not content:
+            return False
+        
+        # 检查是否包含图片路径特征
+        has_path_separator = '\\' in content or '/' in content
+        has_image_extension = any(ext in content.lower() for ext in ['.jpg', '.png', '.gif', '.bmp', '.jpeg'])
+        has_wxauto_path = 'wxauto文件' in content or '微信图片_' in content
+        
+        return (has_path_separator and has_image_extension) or has_wxauto_path
+
     def _build_maibot_message(self, chat_name, message_data):
         """
         构建 MaiBot 消息体
@@ -352,10 +372,48 @@ class MessageProcessor:
             message_info["user_info"]["user_cardname"] = sender
         
         # 构建消息段
-        message_segment = {
-            "type": "text",
-            "data": content
-        }
+        # 检查是否启用图像识别功能
+        import os
+        image_recognition_enabled = os.getenv('IMAGE_RECOGNITION_ENABLED', 'true').lower() == 'true'
+        
+        # 检查是否是图片路径消息且启用了图像识别
+        if image_recognition_enabled and self._is_image_path_message(content):
+            # 如果是图片路径，读取图片并转换为base64
+            try:
+                import base64
+                import os
+                
+                if os.path.exists(content):
+                    with open(content, 'rb') as f:
+                        image_data = f.read()
+                    image_base64 = base64.b64encode(image_data).decode('utf-8')
+                    
+                    # 发送image类型的消息
+                    message_segment = {
+                        "type": "image",
+                        "data": image_base64
+                    }
+                    logger.info(f"检测到图片路径，发送image类型消息: {content}")
+                else:
+                    # 文件不存在，发送文本消息
+                    message_segment = {
+                        "type": "text",
+                        "data": f"[图片文件不存在: {content}]"
+                    }
+                    logger.warning(f"图片文件不存在: {content}")
+            except Exception as e:
+                # 读取失败，发送文本消息
+                message_segment = {
+                    "type": "text",
+                    "data": f"[图片读取失败: {content}, 错误: {str(e)}]"
+                }
+                logger.error(f"图片读取失败: {content}, 错误: {e}")
+        else:
+            # 普通文本消息
+            message_segment = {
+                "type": "text",
+                "data": content
+            }
         
         # 组合完整消息体 - 按照maim_message库的格式
         maibot_message = {

@@ -72,8 +72,10 @@ class WeChatListener:
             # 尝试打开聊天窗口
             chat_result = self.wx.ChatWith(chat_name)
             if chat_result:
-                # 添加到监听列表，不自动保存图片和文件，因为我们不需要
-                self.wx.AddListenChat(chat_name, savepic=False, savefile=False, savevoice=False)
+                # 添加到监听列表，根据配置决定是否启用图片下载
+                import os
+                savepic = os.getenv('IMAGE_AUTO_DOWNLOAD', 'true').lower() == 'true'
+                self.wx.AddListenChat(chat_name, savepic=savepic, savefile=False, savevoice=False)
                 logger.info(f"添加监听聊天: {chat_name}")
                 return True
             else:
