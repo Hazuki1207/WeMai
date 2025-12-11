@@ -106,7 +106,7 @@ WeMai使用`.env`文件进行配置，主要配置项包括：
 | WX_TARGET_CHATS | 要监听的聊天对象列表 | 空（由命令行参数决定） |
 | WX_LISTEN_ALL_IF_EMPTY | 是否监听所有聊天 | false |
 | WX_EXCLUDED_CHATS | 排除的聊天对象 | 文件传输助手,微信团队,微信支付 |
-| MAIBOT_API_URL | MaiBot API地址 | http://your-ip:your-port/api/message |
+| MAIBOT_API_URL | MaiBot API地址 | ws://your-ip:your-port/ws |
 | REDIS_URL | Redis连接地址 | redis://your-ip:your-port |
 | REDIS_QUEUE_KEY | Redis队列键名 | autoText |
 | API_HOST | API监听地址 | 0.0.0.0 |
