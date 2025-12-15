@@ -59,7 +59,7 @@
    > 如果看完了前两步，你应该部署好了属于自己的redis数据库和maibot
    > 那么，可以开始部署和运行本项目了
    ```bash
-   git clone https://github.com/yaki66938/wemai.git
+   git clone https://github.com/Angela459/WeMai.git
    cd wemai
    pip install -r requirements.txt
    cp .env.example .env
@@ -142,6 +142,7 @@ WeMai使用`.env`文件进行配置，主要配置项包括：
 > - 尽管UI自动化相对来说风险较小，但小不等于没有封号风险，请谨慎使用
 > - 项目处于开发阶段，可能存在未知问题
 > - 使用前请确保已了解并同意微信相关协议
+> - 本项目使用Cursor编写，很可能代码上不够优雅
 
 
 ## 📝 许可证
