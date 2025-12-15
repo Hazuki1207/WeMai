@@ -6,6 +6,12 @@
   <img src="https://img.shields.io/badge/Platform-Windows-lightgrey.svg" alt="Platform Windows">
 </div>
 
+## ❗ 前排提醒
+
+原仓库已被删除，本仓库是原仓库的进一步维护版本
+
+原作者：[aki6693](https://github.com/aki6693)
+
 ## 📝 项目简介
 
 **🚀 WeMai是一个微信消息双向转发系统**
