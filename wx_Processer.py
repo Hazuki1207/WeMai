@@ -33,6 +33,9 @@ class MessageProcessor:
         self.platform = platform
         self.router = None
         self.router_task = None
+        # 消息发送队列，确保按顺序发送
+        self.send_queue = None  # 将在start_router中初始化
+        self.send_task = None
         logger.info(f"消息处理器初始化成功，平台：{platform}")
         
         # 初始化Router
@@ -61,6 +64,26 @@ class MessageProcessor:
         except Exception as e:
             logger.error(f"Router初始化失败: {str(e)}")
     
+    async def _process_send_queue(self):
+        """处理消息发送队列，确保按顺序发送"""
+        while True:
+            try:
+                # 从队列获取消息，等待最多5秒
+                receiver, content = await asyncio.wait_for(self.send_queue.get(), timeout=5.0)
+                
+                # 执行实际的发送操作
+                await self._send_to_wechat_sync(receiver, content)
+                
+                # 标记任务完成
+                self.send_queue.task_done()
+            except asyncio.TimeoutError:
+                # 超时继续循环
+                continue
+            except Exception as e:
+                logger.error(f"处理发送队列时发生错误: {str(e)}")
+                import traceback
+                logger.error(f"错误详情: {traceback.format_exc()}")
+    
     def start_router(self):
         """启动Router"""
         try:
@@ -68,6 +91,13 @@ class MessageProcessor:
                 # 创建新的事件循环
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
+                
+                # 初始化消息发送队列
+                self.send_queue = asyncio.Queue()
+                
+                # 启动消息发送队列处理任务
+                self.send_task = loop.create_task(self._process_send_queue())
+                logger.info("消息发送队列已启动")
                 
                 # 启动Router
                 self.router_task = loop.run_until_complete(self.router.run())
@@ -85,11 +115,21 @@ class MessageProcessor:
                 message = MessageBase.from_dict(message)
                 logger.info("消息已转换为MessageBase对象")
             
-            logger.info(f"收到来自MaiBot的回复: {message.message_segment}")
-            
-            # 提取回复信息
+            # 提取消息ID和内容用于日志
             message_info = message.message_info
             message_segment = message.message_segment
+            message_id = getattr(message_info, 'message_id', None) if message_info else None
+            
+            # 提取消息内容预览
+            if hasattr(message_segment, 'type') and message_segment.type == 'text':
+                content_preview = message_segment.data[:100] if message_segment.data else ''
+            else:
+                content_preview = str(message_segment)[:100]
+            
+            logger.info(f"收到来自MaiBot的回复 [消息ID: {message_id}]: {message_segment}")
+            logger.info(f"消息内容预览: {content_preview}")
+            
+            # 提取回复信息
             
             # 获取接收者信息
             user_info = message_info.user_info
@@ -175,7 +215,27 @@ class MessageProcessor:
             logger.error(f"错误详情: {traceback.format_exc()}")
     
     async def _send_to_wechat(self, receiver, content):
-        """发送消息到微信"""
+        """发送消息到微信（添加到队列，确保按顺序发送）"""
+        try:
+            # 检查队列是否已初始化
+            if self.send_queue is None:
+                logger.warning("消息发送队列未初始化，直接发送消息")
+                await self._send_to_wechat_sync(receiver, content)
+                return
+            
+            # 将消息添加到发送队列
+            await self.send_queue.put((receiver, content))
+            logger.info(f"消息已添加到发送队列: {receiver} - {content[:50]}...")
+        except Exception as e:
+            logger.error(f"添加消息到发送队列失败: {str(e)}")
+            # 如果队列失败，尝试直接发送
+            try:
+                await self._send_to_wechat_sync(receiver, content)
+            except Exception as e2:
+                logger.error(f"直接发送消息也失败: {str(e2)}")
+    
+    async def _send_to_wechat_sync(self, receiver, content):
+        """实际执行发送消息到微信的操作"""
         try:
             # 使用asyncio在线程池中执行同步操作
             import asyncio
