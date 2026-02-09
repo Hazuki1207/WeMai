@@ -10,7 +10,12 @@ from datetime import datetime
 from config import MAIBOT_API_URL, PLATFORM_ID
 from maim_message import Router, RouteConfig, TargetConfig, MessageBase, BaseMessageInfo, UserInfo, GroupInfo, Seg
 import os # Added for file existence check
-
+import re
+from pathlib import Path
+import time
+from wx_image_watcher import WxImageWatcher
+from pathlib import Path
+from queue import Queue
 # 配置日志
 logging.basicConfig(
     level=logging.INFO,
@@ -40,7 +45,8 @@ class MessageProcessor:
         
         # 初始化Router
         self._init_router()
-    
+        self.image_watcher = WxImageWatcher(Path(os.getcwd()) / "wxauto文件")
+        self.image_watcher.start()
     def _init_router(self):
         """初始化Router用于与MaiBot通信"""
         try:
@@ -372,6 +378,63 @@ class MessageProcessor:
         
         return (has_path_separator and has_image_extension) or has_wxauto_path
 
+
+
+    def _extract_wechat_time_prefix(self, path: str):
+        """
+        从 wxauto 给的路径中提取时间前缀
+        """
+        name = os.path.basename(path)
+        m = re.search(r"微信图片_(\d{12})", name)
+        return m.group(1) if m else None
+
+    def _find_real_wechat_image(self, fake_path: str, timeout=10):
+        """
+        在 wxauto文件 目录中查找真实微信图片（Windows 稳定版）
+        """
+        import time
+        import re
+        from pathlib import Path
+
+        wxauto_dir = Path(os.getcwd()) / "wxauto文件"
+        if not wxauto_dir.exists():
+            logger.error(f"wxauto文件目录不存在: {wxauto_dir}")
+            return None
+
+        # ✅ 只提取前 14 位时间：YYYYMMDDHHMMSS
+        name = os.path.basename(fake_path)
+        m = re.search(r"微信图片_(\d{14})", name)
+        if not m:
+            logger.error(f"无法解析图片时间前缀: {name}")
+            return None
+
+        time_prefix = m.group(1)
+        logger.warning(f"🔍 在 wxauto文件 中查找图片，时间前缀={time_prefix}")
+
+        start = time.time()
+        while time.time() - start < timeout:
+            candidates = []
+
+            for f in wxauto_dir.glob(f"微信图片_{time_prefix}*.jpg"):
+                try:
+                    stat = f.stat()
+                    if stat.st_size > 0:
+                        candidates.append((stat.st_mtime, f))
+                except:
+                    continue
+
+            if candidates:
+                # 选“最后写入完成”的那个
+                candidates.sort(key=lambda x: x[0], reverse=True)
+                best = candidates[0][1]
+                logger.warning(f"✅ 命中真实微信图片文件: {best}")
+                return str(best)
+
+            time.sleep(0.2)
+
+        logger.error(f"❌ 超时仍未找到微信图片: {time_prefix}")
+        return None
+
     def _build_maibot_message(self, chat_name, message_data):
         """
         构建 MaiBot 消息体
@@ -384,6 +447,7 @@ class MessageProcessor:
             dict: MaiBot 格式的消息体
         """
         # 提取消息信息
+
         sender = message_data['sender']
         content = message_data['content']
         msg_type = message_data['type']
@@ -391,7 +455,7 @@ class MessageProcessor:
         
         # 判断是群聊还是私聊
         is_group_chat = not (chat_name == sender)
-        
+
         # 生成包含用户特征的消息 ID
         # 结合发送者、聊天名称、时间戳和消息内容前20个字符生成哈希
         id_source = f"{sender}_{chat_name}_{timestamp}_{content[:20]}"
@@ -437,37 +501,42 @@ class MessageProcessor:
         image_recognition_enabled = os.getenv('IMAGE_RECOGNITION_ENABLED', 'true').lower() == 'true'
         
         # 检查是否是图片路径消息且启用了图像识别
-        if image_recognition_enabled and self._is_image_path_message(content):
-            # 如果是图片路径，读取图片并转换为base64
+        if self._is_image_path_message(content):
             try:
+                real_path = self.image_watcher.queue.get(timeout=10)
+
                 import base64
                 import os
-                
-                if os.path.exists(content):
-                    with open(content, 'rb') as f:
-                        image_data = f.read()
-                    image_base64 = base64.b64encode(image_data).decode('utf-8')
-                    
-                    # 发送image类型的消息
-                    message_segment = {
-                        "type": "image",
-                        "data": image_base64
-                    }
-                    logger.info(f"检测到图片路径，发送image类型消息: {content}")
-                else:
-                    # 文件不存在，发送文本消息
-                    message_segment = {
-                        "type": "text",
-                        "data": f"[图片文件不存在: {content}]"
-                    }
-                    logger.warning(f"图片文件不存在: {content}")
+
+                # 读取图片
+                with open(real_path, "rb") as f:
+                    image_data = f.read()
+
+                image_base64 = base64.b64encode(image_data).decode("utf-8")
+
+                message_segment = {
+                    "type": "image",
+                    "data": image_base64
+                }
+
+                logger.warning(f"✅ 图片已读取并发送给 MaiBot: {real_path}")
+
+                # ✅ 发送完成后删除图片，防止堆积
+                try:
+                    os.remove(real_path)
+                    logger.warning(f"🗑️ 已删除微信图片文件: {real_path}")
+                except Exception as e:
+                    logger.error(f"删除图片失败（不影响主流程）: {e}")
+
+                logger.warning(f"✅ 使用 watchdog 捕获的图片: {real_path}")
+
             except Exception as e:
-                # 读取失败，发送文本消息
                 message_segment = {
                     "type": "text",
-                    "data": f"[图片读取失败: {content}, 错误: {str(e)}]"
+                    "data": "[图片接收失败]"
                 }
-                logger.error(f"图片读取失败: {content}, 错误: {e}")
+                logger.error(f"watchdog 等待图片失败: {e}")
+
         else:
             # 普通文本消息
             message_segment = {
@@ -496,7 +565,7 @@ class MessageProcessor:
         """
         try:
             # 记录发送的消息
-            logger.info(f"发送消息到 MaiBot: {json.dumps(message, ensure_ascii=False)}")
+            # logger.info(f"发送消息到 MaiBot: {json.dumps(message, ensure_ascii=False)}")
             logger.info(f"请求URL: {MAIBOT_API_URL}")
             
             # 使用Router发送消息
