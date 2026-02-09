@@ -1,142 +1,136 @@
-import asyncio
-import json
-import logging
-from redis import asyncio as aioredis
+# mq_Consumer.py
+import time
+import threading
+import traceback
+from queue import Queue, Empty
 from wxauto import WeChat
-from config import REDIS_URL, REDIS_QUEUE_KEY, LOG_LEVEL, LOG_FORMAT, LOG_DATE_FORMAT
-import os
 
-# 配置日志
-logging.basicConfig(
-    level=getattr(logging, LOG_LEVEL),
-    format=LOG_FORMAT,
-    datefmt=LOG_DATE_FORMAT
-)
+# ======================================================
+# 单线程微信发送器（核心）
+# ======================================================
 
-logger = logging.getLogger(__name__)
+class WxSendWorker(threading.Thread):
+    """
+    独占一个 WeChat 实例
+    串行处理所有发送任务
+    """
 
-# 使用配置文件中的Redis连接信息
-pool = aioredis.ConnectionPool.from_url(REDIS_URL)
+    def __init__(self, task_queue: Queue):
+        super().__init__(daemon=True)
+        self.queue = task_queue
+        self.wx = None
+        self.running = True
+        self._init_wx()
 
-# 微信实例
-wx = WeChat()
+    def _init_wx(self):
+        print("[WxWorker] 初始化 WeChat 实例")
+        self.wx = WeChat()
+        time.sleep(1)
 
+    def _rebuild_wx(self, reason="unknown"):
+        print(f"[WxWorker] ⚠️ 重建 WeChat 实例，原因: {reason}")
+        try:
+            del self.wx
+        except Exception:
+            pass
+        self._init_wx()
 
-async def process_task(task_data: str):
-    try:
-        logger.info("开始处理任务：" + task_data)
-        task = json.loads(task_data)
-        receiver = task.get('receiver')
-        msg = task.get('msg')
-        msg_type = task.get('type', 'text')  # 默认为文字类型
-        msg_segments = task.get('segments', None)  # 多段消息
+    def run(self):
+        print("[WxWorker] 发送线程已启动")
 
-        if not receiver or (not msg and not msg_segments):
-            logger.error(f"无效的任务数据: {task_data}")
-            return
-
-        # 处理多段消息
-        if msg_segments:
-            logger.info(f"处理多段消息，共{len(msg_segments)}段")
-            for segment in msg_segments:
-                segment_type = segment.get('type', 'text')
-                segment_data = segment.get('data', '')
-                await process_single_message(receiver, segment_data, segment_type)
-        else:
-            # 处理单段消息
-            await process_single_message(receiver, msg, msg_type)
-
-        logger.info("处理成功！")
-
-    except json.JSONDecodeError:
-        logger.error(f"解析任务数据失败: {task_data}")
-    except Exception as e:
-        logger.error(f"处理任务时发生错误: {str(e)}")
-
-async def process_single_message(receiver, msg, msg_type):
-    """处理单条消息"""
-    try:
-        # 根据消息类型选择发送方式
-        if msg_type == 'image' or msg_type == 'file':
-            # 图片或文件消息
-            if os.path.exists(msg):
-                wx.SendFiles(msg, receiver)
-                logger.info(f"已发送文件到微信: {receiver} - {msg}")
-            else:
-                # 如果文件不存在，发送文字内容
-                wx.SendMsg(msg, receiver)
-                logger.info(f"文件不存在，发送文字内容: {receiver} - {msg}")
-        elif msg_type == 'emoji' or (isinstance(msg, str) and (msg.startswith('data:image/') or len(msg) > 1000 and msg.replace('+', '').replace('/', '').replace('=', '').isalnum())):
-            # 表情包或base64编码的图片
+        while self.running:
             try:
-                import base64
-                import tempfile
-                
-                # 尝试解码base64数据
-                file_extension = '.png'  # 默认扩展名
-                if msg.startswith('data:image/'):
-                    # 处理data URL格式，提取文件类型
-                    header, encoded = msg.split(",", 1)
-                    if 'gif' in header.lower():
-                        file_extension = '.gif'
-                    elif 'jpeg' in header.lower() or 'jpg' in header.lower():
-                        file_extension = '.jpg'
-                    elif 'png' in header.lower():
-                        file_extension = '.png'
-                    image_data = base64.b64decode(encoded)
-                else:
-                    # 处理纯base64编码，尝试检测文件类型
-                    image_data = base64.b64decode(msg)
-                    # 检查GIF文件头
-                    if image_data.startswith(b'GIF8'):
-                        file_extension = '.gif'
-                    # 检查JPEG文件头
-                    elif image_data.startswith(b'\xff\xd8\xff'):
-                        file_extension = '.jpg'
-                    # 检查PNG文件头
-                    elif image_data.startswith(b'\x89PNG'):
-                        file_extension = '.png'
-                
-                # 创建临时文件，使用正确的扩展名
-                with tempfile.NamedTemporaryFile(delete=False, suffix=file_extension) as temp_file:
-                    temp_file.write(image_data)
-                    temp_file_path = temp_file.name
-                
-                # 发送图片文件
-                wx.SendFiles(temp_file_path, receiver)
-                logger.info(f"已发送base64图片到微信: {receiver}")
-                
-                # 删除临时文件
-                try:
-                    os.unlink(temp_file_path)
-                except:
-                    pass
-                    
+                task = self.queue.get(timeout=1)
+            except Empty:
+                continue
+
+            who = task["who"]
+            content = task["content"]
+            retry = task.get("retry", 1)
+
+            success = self._send_with_retry(who, content, retry)
+
+            if not success:
+                print(f"[WxWorker] ⛔ 消息最终发送失败 -> {who}")
+
+            self.queue.task_done()
+
+    def _send_with_retry(self, who, content, retry):
+        attempt = 0
+        while attempt <= retry:
+            attempt += 1
+            try:
+                print(f"[WxWorker] ▶ 发送尝试 {attempt} -> {who}")
+                self.wx.ChatWith(who)
+                time.sleep(0.3)
+                self.wx.SendMsg(content)
+                time.sleep(0.2)
+                print(f"[WxWorker] ✅ 发送成功 -> {who}")
+                return True
+
             except Exception as e:
-                logger.error(f"处理base64图片失败: {str(e)}")
-                # 如果base64解码失败，尝试作为文字发送
-                wx.SendMsg(msg, receiver)
-                logger.info(f"base64解码失败，发送文字内容: {receiver} - {msg[:50]}...")
-        else:
-            # 文字消息
-            wx.SendMsg(msg, receiver)
-            logger.info(f"已发送文字消息到微信: {receiver} - {msg}")
+                print(f"[WxWorker] ❌ 发送失败 -> {who}")
+                print(f"[WxWorker] 异常类型: {type(e).__name__}")
+                print(f"[WxWorker] 异常信息: {e}")
+                traceback.print_exc()
 
-    except Exception as e:
-        logger.error(f"处理单条消息时发生错误: {str(e)}")
+                if attempt <= retry:
+                    self._rebuild_wx(reason=type(e).__name__)
+                    time.sleep(1)
+
+        return False
 
 
-async def main():
-    """主函数：监听消息队列并处理消息"""
-    redis = None
+# ======================================================
+# 全局发送队列（缓冲高峰消息）
+# ======================================================
+
+send_queue = Queue(maxsize=5000)
+
+# 启动单线程发送 worker
+wx_worker = WxSendWorker(send_queue)
+wx_worker.start()
+
+
+# ======================================================
+# 对外接口：消息入队
+# ======================================================
+
+def consume_msg(msg: dict):
+    """
+    msg 示例:
+    {
+        "from": "张三",
+        "content": "你好"
+    }
+    """
+    who = msg.get("from")
+    content = msg.get("content")
+
+    if not who or not content:
+        print("[consume_msg] ⚠️ 非法消息:", msg)
+        return
+
+    task = {
+        "who": who,
+        "content": content,
+        "retry": 1
+    }
+
     try:
-        # 创建Redis连接
-        redis = aioredis.Redis.from_pool(pool)
-        logger.info("消息队列服务启动成功")
+        send_queue.put(task, timeout=1)
+        print(f"[consume_msg] ➕ 已入队 -> {who} | 队列长度: {send_queue.qsize()}")
+    except Exception:
+        print("[consume_msg] 🚨 发送队列已满，消息丢弃:", task)
 
-        while True:
-            try:
-                # 从队列获取消息，设置5秒超时
+
+
+def main(redis_client=None):
+    print("[mq_Consumer] consumer main started")
+
+    while True:
+        try:
+           # 从队列获取消息，设置5秒超时
                 task = await redis.brpop([REDIS_QUEUE_KEY], timeout=5)
                 if task:
                     await process_task(task[1].decode('utf-8'))
@@ -147,20 +141,7 @@ async def main():
                 logger.error(f"处理消息时发生错误: {str(e)}")
                 await asyncio.sleep(1)  # 发生错误时暂停1秒
 
-    except Exception as e:
-        logger.error(f"消息队列服务发生错误: {str(e)}")
-    finally:
-        # 清理资源
-        if redis:
-            await redis.aclose()
-        await pool.aclose()
-        logger.info("消息队列服务已关闭")
-
-
-if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        logger.info("程序被用户中断")
-    except Exception as e:
-        logger.error(f"程序异常退出: {str(e)}")
+        except Exception as e:
+            print("[mq_Consumer] 主循环异常:", e)
+            traceback.print_exc()
+            time.sleep(2)

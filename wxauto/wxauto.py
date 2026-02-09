@@ -1,8 +1,3 @@
-"""
-Author: Cluic
-Update: 2024-07-22
-Version: 3.9.11.17.4
-"""
 
 from . import uiautomation as uia
 from .languages import *
@@ -80,18 +75,48 @@ class WeChat(WeChatBase):
         if wxversion != self.VERSION:
             Warnings.lightred(self._lang('版本不一致', 'WARNING').format(wxversion, self.VERSION), stacklevel=2)
             return False
-    
-    
-    def _show(self):
-        self.HWND = FindWindow(classname='WeChatMainWndForPC')
+
+    def _show(self, timeout=10):
+        """
+        显示并激活微信窗口（兼容 Qt 新版微信）
+        """
+        t0 = time.time()
+        self.HWND = None
+
+        # 精确命中当前微信
+        classnames = [
+            'Qt51514QWindowIcon',  # 新版微信
+            'WeChatMainWndForPC',  # 旧版兜底
+            'WeChatMainWnd',
+        ]
+
+        while time.time() - t0 < timeout:
+            for cls in classnames:
+                hwnd = FindWindow(classname=cls)
+                if hwnd:
+                    self.HWND = hwnd
+                    break
+            if self.HWND:
+                break
+            time.sleep(0.3)
+
+        if not self.HWND:
+            raise RuntimeError(
+                'wxauto: 未找到微信主窗口（Qt / 旧版类名均未命中）'
+            )
+
         win32gui.ShowWindow(self.HWND, 1)
         win32gui.SetWindowPos(self.HWND, -1, 0, 0, 0, 0, 3)
         win32gui.SetWindowPos(self.HWND, -2, 0, 0, 0, 0, 3)
+
         self.UiaAPI.SwitchToThisWindow()
 
     def _refresh(self):
-        self.UiaAPI.SendKeys('{Ctrl}{Alt}w')
-        self.UiaAPI.SendKeys('{Ctrl}{Alt}w')
+        try:
+            self.UiaAPI.SendKeys('{Ctrl}{Alt}w')
+            self.UiaAPI.SendKeys('{Ctrl}{Alt}w')
+        except:
+            pass
         self._show()
 
     def _get_friend_details(self):
