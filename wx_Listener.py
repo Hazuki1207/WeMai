@@ -75,7 +75,8 @@ class WeChatListener:
                 # 添加到监听列表，根据配置决定是否启用图片下载
                 import os
                 savepic = os.getenv('IMAGE_AUTO_DOWNLOAD', 'true').lower() == 'true'
-                self.wx.AddListenChat(chat_name, savepic=savepic, savefile=False, savevoice=False)
+                savevoice = os.getenv('VOICE_AUTO', 'true').lower() == 'true'
+                self.wx.AddListenChat(chat_name, savepic=savepic, savefile=False, savevoice=savevoice)
                 logger.info(f"添加监听聊天: {chat_name}")
                 return True
             else:
@@ -110,17 +111,6 @@ class WeChatListener:
             msg_type = message.type
             sender = message.sender
             content = message.content
-            # === 语音转文字（wxauto 3.9.x）===
-            voice_text = None
-            if msg_type == "voice":
-                try:
-                    import time
-                    time.sleep(0.5)  # ⏱ 等微信 UI 转文字
-                    voice_text = message._get_voice_text()
-                    logger.warning(f"[VOICE→TEXT] {sender}: {voice_text}")
-                except Exception as e:
-                    logger.warning(f"语音转文字失败: {e}")
-
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             
             # 过滤系统消息，如"以下为新消息"等
@@ -142,7 +132,6 @@ class WeChatListener:
                 "sender": sender,
                 "type": msg_type,
                 "content": content,
-                "voice_text": voice_text,
                 "timestamp": timestamp
             }
             

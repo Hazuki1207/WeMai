@@ -16,6 +16,10 @@ import time
 from wx_image_watcher import WxImageWatcher
 from pathlib import Path
 from queue import Queue
+from wxauto import WeChat
+
+wechat = WeChat()
+current_chat = None
 # 配置日志
 logging.basicConfig(
     level=logging.INFO,
@@ -248,12 +252,15 @@ class MessageProcessor:
             import concurrent.futures
             
             def send_message():
+                global current_chat
                 try:
                     from wxauto import WeChat
                     import base64
                     import tempfile
                     import os
-                    wechat = WeChat()
+                    if current_chat != receiver:
+                        wechat.ChatWith(receiver)
+                        current_chat = receiver
                     
                     # 检查是否是base64编码的图片数据
                     if isinstance(content, str) and (content.startswith('data:image/') or len(content) > 1000 and content.replace('+', '').replace('/', '').replace('=', '').isalnum()):

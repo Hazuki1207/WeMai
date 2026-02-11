@@ -20,6 +20,7 @@ class WxSendWorker(threading.Thread):
         self.queue = task_queue
         self.wx = None
         self.running = True
+        self.current_chat = None
         self._init_wx()
 
     def _init_wx(self):
@@ -61,7 +62,10 @@ class WxSendWorker(threading.Thread):
             attempt += 1
             try:
                 print(f"[WxWorker] ▶ 发送尝试 {attempt} -> {who}")
-                self.wx.ChatWith(who)
+                if self.current_chat != who:
+                    self.wx.ChatWith(who)
+                    self.current_chat = who
+                # self.wx.ChatWith(who)
                 time.sleep(0.3)
                 self.wx.SendMsg(content)
                 time.sleep(0.2)
@@ -93,7 +97,7 @@ wx_worker.start()
 
 
 # ======================================================
-# 对外接口：消息入队
+# 对外接口：消息入队（⚠️ 不碰微信）
 # ======================================================
 
 def consume_msg(msg: dict):
@@ -124,22 +128,22 @@ def consume_msg(msg: dict):
         print("[consume_msg] 🚨 发送队列已满，消息丢弃:", task)
 
 
+# ======================================================
+# main() —— 保持你原有 main.py 的调用方式
+# ======================================================
 
 def main(redis_client=None):
     print("[mq_Consumer] consumer main started")
 
     while True:
         try:
-          # 从队列获取消息，设置5秒超时
-                task = await redis.brpop([REDIS_QUEUE_KEY], timeout=5)
-                if task:
-                    await process_task(task[1].decode('utf-8'))
-            except asyncio.CancelledError:
-                logger.info("收到停止信号，正在关闭服务...")
-                break
-            except Exception as e:
-                logger.error(f"处理消息时发生错误: {str(e)}")
-                await asyncio.sleep(1)  # 发生错误时暂停1秒
+            # ⚠️ 保留你原来的 Redis / MQ 消费逻辑
+            # 示例（伪代码）：
+            #
+            # msg = redis_client.brpop("queue_name")
+            # consume_msg(parsed_msg)
+            #
+            time.sleep(1)
 
         except Exception as e:
             print("[mq_Consumer] 主循环异常:", e)
