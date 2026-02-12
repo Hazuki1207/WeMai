@@ -13,7 +13,6 @@ import os # Added for file existence check
 import re
 from pathlib import Path
 import time
-from wx_image_watcher import WxImageWatcher
 from pathlib import Path
 from queue import Queue
 from wxauto import WeChat
@@ -49,8 +48,6 @@ class MessageProcessor:
         
         # 初始化Router
         self._init_router()
-        self.image_watcher = WxImageWatcher(Path(os.getcwd()) / "wxauto文件")
-        self.image_watcher.start()
     def _init_router(self):
         """初始化Router用于与MaiBot通信"""
         try:
@@ -388,14 +385,9 @@ class MessageProcessor:
         
         return (has_path_separator and has_image_extension) or has_wxauto_path
 
-
-
     def _extract_wechat_time_prefix(self, path: str):
-        """
-        从 wxauto 给的路径中提取时间前缀
-        """
         name = os.path.basename(path)
-        m = re.search(r"微信图片_(\d{12})", name)
+        m = re.search(r"微信图片_(\d{14})", name)
         return m.group(1) if m else None
 
     def _find_real_wechat_image(self, fake_path: str, timeout=10):
@@ -513,12 +505,45 @@ class MessageProcessor:
         # 检查是否是图片路径消息且启用了图像识别
         if self._is_image_path_message(content):
             try:
-                real_path = self.image_watcher.queue.get(timeout=10)
-
                 import base64
-                import os
 
-                # 读取图片
+                # ✅ 如果 content 本身就是存在的真实路径，直接用
+                if os.path.exists(content):
+                    real_path = content
+                    logger.warning(f"✅ 直接使用真实微信图片路径: {real_path}")
+                else:
+                    # 否则才去扫描目录（兼容旧版本）
+                    time_prefix = self._extract_wechat_time_prefix(content)
+                    if not time_prefix:
+                        raise Exception("无法解析微信图片时间戳")
+
+                    wxauto_dir = Path(os.getcwd()) / "wxauto文件"
+                    logger.warning(f"🔍 查找微信图片，时间戳: {time_prefix}")
+
+                    real_path = None
+                    start_time = time.time()
+
+                    while time.time() - start_time < 10:
+                        for f in wxauto_dir.glob(f"微信图片_{time_prefix}*.jpg"):
+                            if f.stat().st_size > 0:
+                                real_path = str(f)
+                                break
+                        if real_path:
+                            break
+                        time.sleep(0.2)
+
+                    if not real_path:
+                        raise Exception("超时未找到微信图片文件")
+
+                # 等待文件稳定
+                last_size = -1
+                for _ in range(20):
+                    size = os.path.getsize(real_path)
+                    if size > 0 and size == last_size:
+                        break
+                    last_size = size
+                    time.sleep(0.3)
+
                 with open(real_path, "rb") as f:
                     image_data = f.read()
 
@@ -529,23 +554,25 @@ class MessageProcessor:
                     "data": image_base64
                 }
 
-                logger.warning(f"✅ 图片已读取并发送给 MaiBot: {real_path}")
+                logger.warning(f"✅ 图片读取成功: {real_path}")
 
-                # ✅ 发送完成后删除图片，防止堆积
-                try:
-                    os.remove(real_path)
-                    logger.warning(f"🗑️ 已删除微信图片文件: {real_path}")
-                except Exception as e:
-                    logger.error(f"删除图片失败（不影响主流程）: {e}")
-
-                logger.warning(f"✅ 使用 watchdog 捕获的图片: {real_path}")
+                # 删除
+                for i in range(5):
+                    try:
+                        os.remove(real_path)
+                        logger.warning(f"🗑️ 已删除微信图片文件: {real_path}")
+                        break
+                    except:
+                        time.sleep(0.5)
 
             except Exception as e:
                 message_segment = {
                     "type": "text",
                     "data": "[图片接收失败]"
                 }
-                logger.error(f"watchdog 等待图片失败: {e}")
+                logger.error(f"图片处理失败: {e}")
+
+
 
         else:
             # 普通文本消息

@@ -87,6 +87,7 @@ class WeChatBase:
                 filepath = self._download_file(msg.control)
                 msg.content = filepath if filepath else msg.content
             elif msg.content.startswith(f"[{self._lang('语音')}]") and savevoice:
+                self._show()
                 voice_text = self._get_voice_text(msg.control)
                 msg.content = voice_text if voice_text else msg.content
             msg.info[1] = msg.content
