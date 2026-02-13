@@ -503,47 +503,51 @@ class MessageProcessor:
         image_recognition_enabled = os.getenv('IMAGE_RECOGNITION_ENABLED', 'true').lower() == 'true'
         
         # 检查是否是图片路径消息且启用了图像识别
+        import base64
         if self._is_image_path_message(content):
             try:
-                import base64
+                wxauto_dir = Path(os.getcwd()) / "wxauto文件"
 
-                # ✅ 如果 content 本身就是存在的真实路径，直接用
-                if os.path.exists(content):
-                    real_path = content
-                    logger.warning(f"✅ 直接使用真实微信图片路径: {real_path}")
-                else:
-                    # 否则才去扫描目录（兼容旧版本）
-                    time_prefix = self._extract_wechat_time_prefix(content)
-                    if not time_prefix:
-                        raise Exception("无法解析微信图片时间戳")
+                # 1️⃣ 提取 14 位时间戳
+                match = re.search(r"微信图片_(\d{14})", content)
+                if not match:
+                    raise Exception("无法提取微信图片时间戳")
 
-                    wxauto_dir = Path(os.getcwd()) / "wxauto文件"
-                    logger.warning(f"🔍 查找微信图片，时间戳: {time_prefix}")
+                time_prefix = match.group(1)
+                logger.warning(f"🔍 正在匹配真实微信图片文件: {time_prefix}")
 
-                    real_path = None
-                    start_time = time.time()
+                # 2️⃣ 等待真实文件出现（支持14位或20位）
+                start_time = time.time()
+                real_path = None
 
-                    while time.time() - start_time < 10:
-                        for f in wxauto_dir.glob(f"微信图片_{time_prefix}*.jpg"):
-                            if f.stat().st_size > 0:
-                                real_path = str(f)
-                                break
-                        if real_path:
-                            break
-                        time.sleep(0.2)
+                while time.time() - start_time < 15:
+                    candidates = list(wxauto_dir.glob(f"微信图片_{time_prefix}*.jpg"))
 
-                    if not real_path:
-                        raise Exception("超时未找到微信图片文件")
+                    if candidates:
+                        # 取最后修改时间最新的文件（最安全）
+                        real_path = max(candidates, key=lambda f: f.stat().st_mtime)
+                        break
 
-                # 等待文件稳定
+                    time.sleep(0.2)
+
+                if not real_path:
+                    raise Exception("等待图片文件出现超时")
+
+                logger.warning(f"📂 找到真实图片文件: {real_path}")
+
+                # 3️⃣ 等待文件写入完成（防止读到0字节）
                 last_size = -1
-                for _ in range(20):
-                    size = os.path.getsize(real_path)
+                for _ in range(40):
+                    size = real_path.stat().st_size
                     if size > 0 and size == last_size:
                         break
                     last_size = size
-                    time.sleep(0.3)
+                    time.sleep(0.25)
 
+                if real_path.stat().st_size == 0:
+                    raise Exception("图片文件大小为0")
+
+                # 4️⃣ 读取图片
                 with open(real_path, "rb") as f:
                     image_data = f.read()
 
@@ -554,23 +558,27 @@ class MessageProcessor:
                     "data": image_base64
                 }
 
-                logger.warning(f"✅ 图片读取成功: {real_path}")
+                logger.warning("✅ 图片读取成功")
 
-                # 删除
-                for i in range(5):
+                # 5️⃣ 删除文件（强制重试）
+                for i in range(10):
                     try:
                         os.remove(real_path)
-                        logger.warning(f"🗑️ 已删除微信图片文件: {real_path}")
-                        break
+                        if not real_path.exists():
+                            logger.warning("🗑️ 微信图片文件删除成功")
+                            break
                     except:
-                        time.sleep(0.5)
+                        time.sleep(0.3)
+
+                if real_path.exists():
+                    logger.error("⚠️ 图片文件删除失败")
 
             except Exception as e:
+                logger.error(f"图片处理失败: {e}")
                 message_segment = {
                     "type": "text",
                     "data": "[图片接收失败]"
                 }
-                logger.error(f"图片处理失败: {e}")
 
 
 
