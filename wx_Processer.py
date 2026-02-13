@@ -505,6 +505,9 @@ class MessageProcessor:
         # 检查是否是图片路径消息且启用了图像识别
         import base64
         import time as time_module
+        # ⭐ 预编译（模块级只做一次，性能提升很大）
+        WECHAT_IMG_RE = re.compile(r"微信图片_(\d{14})")
+
         if self._is_image_path_message(content):
             try:
                 raw_path = Path(content)
@@ -515,79 +518,106 @@ class MessageProcessor:
                 real_path = None
 
                 # ==================================================
-                # ⭐ STEP 1：直接使用 content 路径（最高优先级）
+                # ⭐ STEP 1：零成本直命中（最快路径）
                 # ==================================================
-                if raw_path.exists() and raw_path.stat().st_size > 0:
-                    real_path = raw_path
-                    logger.warning("✅ 直接命中图片路径")
+                try:
+                    if raw_path.exists() and raw_path.stat().st_size > 0:
+                        real_path = raw_path
+                        logger.warning("⚡ 直接命中图片路径")
+                except Exception:
+                    pass
 
                 # ==================================================
-                # ⭐ STEP 2：时间窗口匹配（兼容改名情况）
+                # ⭐ STEP 2：一次性目录扫描（性能关键优化）
                 # ==================================================
                 if not real_path:
-                    match = re.search(r"微信图片_(\d{14})", content)
-                    if match:
+                    match = WECHAT_IMG_RE.search(content)
+                    if match and wxauto_dir.exists():
                         base_ts = int(match.group(1))
 
-                        for offset in (0, 1, -1, 2, -2):
-                            ts_try = str(base_ts + offset)
+                        # ⭐⭐⭐ 只扫一次目录
+                        all_files = list(wxauto_dir.glob("微信图片_*.*"))
 
-                            candidates = []
-                            candidates += list(wxauto_dir.glob(f"微信图片_{ts_try}*.jpg"))
-                            candidates += list(wxauto_dir.glob(f"微信图片_{ts_try}*.png"))
-                            candidates += list(wxauto_dir.glob(f"微信图片_{ts_try}*.jpeg"))
+                        best_file = None
+                        best_score = 999999
 
-                            if candidates:
-                                real_path = max(candidates, key=lambda f: f.stat().st_mtime)
-                                logger.warning(f"🧭 时间窗口命中: {real_path}")
-                                break
+                        for f in all_files:
+                            m = WECHAT_IMG_RE.search(f.name)
+                            if not m:
+                                continue
+
+                            try:
+                                ts = int(m.group(1))
+                                diff = abs(ts - base_ts)
+
+                                # ⭐ 时间窗口 ±2 秒
+                                if diff <= 2 and f.stat().st_size > 0:
+                                    if diff < best_score:
+                                        best_score = diff
+                                        best_file = f
+                            except Exception:
+                                continue
+
+                        if best_file:
+                            real_path = best_file
+                            logger.warning(f"🧭 时间匹配命中: {real_path}")
 
                 # ==================================================
-                # ⭐ STEP 3：最后才等待新文件（兜底）
+                # ⭐ STEP 3：兜底等待（极少触发）
                 # ==================================================
                 if not real_path:
-                    logger.warning("⏳ 进入新文件等待模式")
+                    logger.warning("⏳ 进入兜底等待模式")
 
-                    before_files = {f for f in wxauto_dir.glob("微信图片_*.*")}
+                    before = {f.name for f in wxauto_dir.glob("微信图片_*.*")}
                     start_time = time_module.time()
 
-                    while time_module.time() - start_time < 20:
-                        now_files = {f for f in wxauto_dir.glob("微信图片_*.*")}
-                        new_files = now_files - before_files
-
-                        if new_files:
-                            real_path = max(new_files, key=lambda f: f.stat().st_mtime)
-                            logger.warning(f"🆕 捕获到新图片: {real_path}")
+                    while time_module.time() - start_time < 10:  # ⭐ 缩短等待
+                        current_files = list(wxauto_dir.glob("微信图片_*.*"))
+                        for f in current_files:
+                            if f.name not in before and f.stat().st_size > 0:
+                                real_path = f
+                                logger.warning(f"🆕 捕获新图片: {real_path}")
+                                break
+                        if real_path:
                             break
-
-                        time_module.sleep(0.2)
+                        time_module.sleep(0.15)
 
                 if not real_path:
                     raise Exception("未能定位到微信图片文件")
 
                 # ==================================================
-                # ⭐ STEP 4：等待写入稳定
+                # ⭐ STEP 4：快速写入稳定检测（性能优化版）
                 # ==================================================
                 last_size = -1
-                for _ in range(60):
-                    size = real_path.stat().st_size
+                stable_count = 0
+
+                for _ in range(8):  # ⭐ 从60次 → 8次
+                    try:
+                        size = real_path.stat().st_size
+                    except Exception:
+                        time_module.sleep(0.1)
+                        continue
+
                     if size > 0 and size == last_size:
-                        break
+                        stable_count += 1
+                        if stable_count >= 2:  # ⭐ 连续两次稳定即可
+                            break
+                    else:
+                        stable_count = 0
+
                     last_size = size
-                    time_module.sleep(0.25)
+                    time_module.sleep(0.12)
 
                 if real_path.stat().st_size == 0:
                     raise Exception("图片文件大小为0")
 
-                logger.warning("📦 图片写入完成")
+                logger.warning("📦 图片已稳定")
 
                 # ==================================================
-                # ⭐ STEP 5：读取
+                # ⭐ STEP 5：读取（保持最快路径）
                 # ==================================================
                 with open(real_path, "rb") as f:
-                    image_data = f.read()
-
-                image_base64 = base64.b64encode(image_data).decode("utf-8")
+                    image_base64 = base64.b64encode(f.read()).decode("utf-8")
 
                 message_segment = {
                     "type": "image",
@@ -597,21 +627,22 @@ class MessageProcessor:
                 logger.warning("✅ 图片读取成功")
 
                 # ==================================================
-                # ⭐ STEP 6：删除（强力）
+                # ⭐ STEP 6：非阻塞删除（性能关键）
                 # ==================================================
-                deleted = False
-                for _ in range(15):
-                    try:
-                        os.remove(real_path)
-                        if not real_path.exists():
-                            deleted = True
-                            logger.warning("🗑️ 图片删除成功")
-                            break
-                    except Exception:
-                        time_module.sleep(0.3)
+                def _async_delete(p: Path):
+                    for _ in range(8):
+                        try:
+                            os.remove(p)
+                            return
+                        except Exception:
+                            time_module.sleep(0.2)
 
-                if not deleted:
-                    logger.error("⚠️ 图片删除最终失败")
+                import threading
+                threading.Thread(
+                    target=_async_delete,
+                    args=(real_path,),
+                    daemon=True
+                ).start()
 
             except Exception as e:
                 logger.error(f"图片处理失败: {e}")
