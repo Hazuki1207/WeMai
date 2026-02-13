@@ -504,50 +504,86 @@ class MessageProcessor:
         
         # 检查是否是图片路径消息且启用了图像识别
         import base64
+        import time as time_module
         if self._is_image_path_message(content):
             try:
-                wxauto_dir = Path(os.getcwd()) / "wxauto文件"
+                raw_path = Path(content)
+                wxauto_dir = raw_path.parent
 
-                # 1️⃣ 提取 14 位时间戳
-                match = re.search(r"微信图片_(\d{14})", content)
-                if not match:
-                    raise Exception("无法提取微信图片时间戳")
+                logger.warning(f"📁 图片监听目录: {wxauto_dir}")
 
-                time_prefix = match.group(1)
-                logger.warning(f"🔍 正在匹配真实微信图片文件: {time_prefix}")
-
-                # 2️⃣ 等待真实文件出现（支持14位或20位）
-                start_time = time.time()
                 real_path = None
 
-                while time.time() - start_time < 15:
-                    candidates = list(wxauto_dir.glob(f"微信图片_{time_prefix}*.jpg"))
+                # ==================================================
+                # ⭐ STEP 1：直接使用 content 路径（最高优先级）
+                # ==================================================
+                if raw_path.exists() and raw_path.stat().st_size > 0:
+                    real_path = raw_path
+                    logger.warning("✅ 直接命中图片路径")
 
-                    if candidates:
-                        # 取最后修改时间最新的文件（最安全）
-                        real_path = max(candidates, key=lambda f: f.stat().st_mtime)
-                        break
+                # ==================================================
+                # ⭐ STEP 2：时间窗口匹配（兼容改名情况）
+                # ==================================================
+                if not real_path:
+                    match = re.search(r"微信图片_(\d{14})", content)
+                    if match:
+                        base_ts = int(match.group(1))
 
-                    time.sleep(0.2)
+                        for offset in (0, 1, -1, 2, -2):
+                            ts_try = str(base_ts + offset)
+
+                            candidates = []
+                            candidates += list(wxauto_dir.glob(f"微信图片_{ts_try}*.jpg"))
+                            candidates += list(wxauto_dir.glob(f"微信图片_{ts_try}*.png"))
+                            candidates += list(wxauto_dir.glob(f"微信图片_{ts_try}*.jpeg"))
+
+                            if candidates:
+                                real_path = max(candidates, key=lambda f: f.stat().st_mtime)
+                                logger.warning(f"🧭 时间窗口命中: {real_path}")
+                                break
+
+                # ==================================================
+                # ⭐ STEP 3：最后才等待新文件（兜底）
+                # ==================================================
+                if not real_path:
+                    logger.warning("⏳ 进入新文件等待模式")
+
+                    before_files = {f for f in wxauto_dir.glob("微信图片_*.*")}
+                    start_time = time_module.time()
+
+                    while time_module.time() - start_time < 20:
+                        now_files = {f for f in wxauto_dir.glob("微信图片_*.*")}
+                        new_files = now_files - before_files
+
+                        if new_files:
+                            real_path = max(new_files, key=lambda f: f.stat().st_mtime)
+                            logger.warning(f"🆕 捕获到新图片: {real_path}")
+                            break
+
+                        time_module.sleep(0.2)
 
                 if not real_path:
-                    raise Exception("等待图片文件出现超时")
+                    raise Exception("未能定位到微信图片文件")
 
-                logger.warning(f"📂 找到真实图片文件: {real_path}")
-
-                # 3️⃣ 等待文件写入完成（防止读到0字节）
+                # ==================================================
+                # ⭐ STEP 4：等待写入稳定
+                # ==================================================
                 last_size = -1
-                for _ in range(40):
+                for _ in range(60):
                     size = real_path.stat().st_size
                     if size > 0 and size == last_size:
                         break
                     last_size = size
-                    time.sleep(0.25)
+                    time_module.sleep(0.25)
 
                 if real_path.stat().st_size == 0:
                     raise Exception("图片文件大小为0")
 
-                # 4️⃣ 读取图片
+                logger.warning("📦 图片写入完成")
+
+                # ==================================================
+                # ⭐ STEP 5：读取
+                # ==================================================
                 with open(real_path, "rb") as f:
                     image_data = f.read()
 
@@ -560,18 +596,22 @@ class MessageProcessor:
 
                 logger.warning("✅ 图片读取成功")
 
-                # 5️⃣ 删除文件（强制重试）
-                for i in range(10):
+                # ==================================================
+                # ⭐ STEP 6：删除（强力）
+                # ==================================================
+                deleted = False
+                for _ in range(15):
                     try:
                         os.remove(real_path)
                         if not real_path.exists():
-                            logger.warning("🗑️ 微信图片文件删除成功")
+                            deleted = True
+                            logger.warning("🗑️ 图片删除成功")
                             break
-                    except:
-                        time.sleep(0.3)
+                    except Exception:
+                        time_module.sleep(0.3)
 
-                if real_path.exists():
-                    logger.error("⚠️ 图片文件删除失败")
+                if not deleted:
+                    logger.error("⚠️ 图片删除最终失败")
 
             except Exception as e:
                 logger.error(f"图片处理失败: {e}")
@@ -579,7 +619,6 @@ class MessageProcessor:
                     "type": "text",
                     "data": "[图片接收失败]"
                 }
-
 
 
         else:
